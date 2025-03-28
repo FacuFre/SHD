@@ -5,30 +5,30 @@ import gc
 from datetime import datetime, timezone
 import pandas as pd
 from pyhomebroker import HomeBroker
+from collections import defaultdict
+import pytz
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 
-# Variables de PyHomeBroker
+if not SUPABASE_URL or not SUPABASE_API_KEY:
+    raise ValueError("❌ Faltan credenciales de Supabase")
+
 BROKER_ID = int(os.getenv("BROKER_ID"))
 DNI = os.getenv("DNI")
 USER = os.getenv("USER")
 PASSWORD = os.getenv("PASSWORD")
 
-# Aquí definís tus listas de símbolos exactas:
-TASA_FIJA = {
-    "S31M5", "S16A5", "BBA2S", "S28A5", "S16Y5", "BBY5", "S30Y5", "S18J5", "BJ25",
-    "S30J5", "S31L5", "S29G5", "S29S5", "S30S5", "T17O5", "S30L5", "S10N5",
-    "S28N5", "T30E6", "T3F6", "T30J6", "T15E7"
-}
-BONOS_SOBERANOS = {
-    "AL29", "AL29D", "AL30", "AL30D", "AL35", "AL35D", "AL41D", "AL41",
-    "AL14D", "GD29", "GD29D", "GD30", "GD30D", "GD35", "GD35D", "GD38",
-    "GD38D", "GD41", "GD41D", "GD46", "GD46D"
-}
-# ... etc. para el resto de categorías
+# Define acá las categorías exactas, si querés
+# TASA_FIJA = {...}
+# BONOS_SOBERANOS = {...}
+# etc. 
+# O podés ir todo a una sola tabla, según tu gusto.
+
+contador_categorias = defaultdict(int)
 
 def guardar_en_supabase(tabla: str, df: pd.DataFrame):
+    """Inserta/upserta los datos en Supabase (tabla), con on_conflict=symbol."""
     url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
     headers = {
         "apikey": SUPABASE_API_KEY,
@@ -37,51 +37,80 @@ def guardar_en_supabase(tabla: str, df: pd.DataFrame):
         "Prefer": "resolution=merge-duplicates"
     }
     data = df.to_dict(orient="records")
-
     for record in data:
         record["updated_at"] = datetime.now(timezone.utc).isoformat()
         if not record.get("symbol"):
             record["symbol"] = "SIN_SYMBOL"
 
-        print(f"📤 Insertando en Supabase -> {tabla}:", record)
+        print(f"📤 Insertando en Supabase -> {tabla} | record:", record)
+
         resp = requests.post(url, headers=headers, json=record)
         if resp.status_code not in (200, 201):
-            print(f"❌ Error {resp.status_code}: {resp.text}")
+            print(f"❌ Error Supabase [{tabla}] → {resp.status_code}: {resp.text}")
+        else:
+            contador_categorias[tabla] += 1
 
-def main_loop():
-    hb = HomeBroker(BROKER_ID)
+def on_securities(online, quotes):
+    """Callback que se llama cuando PyHomeBroker recibe data de los instrumentos suscriptos."""
+    print(f"📥 [on_securities] Cantidad de instrumentos: {len(quotes)}")
+    if len(quotes) == 0:
+        return
+
+    df = quotes.reset_index()
+    # Ejemplo: Si lo querés todo en 'bonos_soberanos', lo hacés directo:
+    guardar_en_supabase("bonos_soberanos", df)
+
+    # O si querés clasificar, hacés un filtrado por símbolo, etc.
+    # e insertás en tablas separadas.
+
+
+def ciclo_breve_suscripcion():
+    """Conecta, suscribe, espera unos segundos y se desconecta."""
+    global contador_categorias
+    contador_categorias = defaultdict(int)
+
+    hb = HomeBroker(BROKER_ID, on_securities=on_securities)
     hb.auth.login(dni=DNI, user=USER, password=PASSWORD, raise_exception=True)
+    hb.online.connect()
 
-    print("✅ Conectado a PyHomeBroker. Polling cada 5 minutos...")
+    print("📡 Suscribiendo: government_bonds - 24hs")
+    hb.online.subscribe_securities('government_bonds', '24hs')
 
-    while True:
-        try:
-            print("🔄 get_bonds(): consultando todos los bonos (versión sin get_quotes).")
-            df_bonds = hb.get_bonds()   # <-- suponiendo que tu versión tenga este método
+    print("⌛ Esperamos 10 segundos para recibir data...")
+    time.sleep(10)
 
-            # df_bonds ahora tendría filas con 'symbol', 'last', 'bid', 'ask', etc.
-            # Filtramos cada categoría que nos interese
+    print("🔌 Desconectando de PyHomeBroker.")
+    hb.online.disconnect()
 
-            # 1) Tasa Fija
-            df_tasa_fija = df_bonds[df_bonds["symbol"].isin(TASA_FIJA)]
-            if not df_tasa_fija.empty:
-                guardar_en_supabase("tasa_fija", df_tasa_fija)
+    # Log final
+    if contador_categorias:
+        print("📊 Resumen de inserciones:")
+        for tabla, cantidad in contador_categorias.items():
+            print(f"   - {tabla}: {cantidad} registros insertados/actualizados")
+    else:
+        print("📊 No se insertó nada en este ciclo.")
 
-            # 2) Bonos Soberanos
-            df_b_sob = df_bonds[df_bonds["symbol"].isin(BONOS_SOBERANOS)]
-            if not df_b_sob.empty:
-                guardar_en_supabase("bonos_soberanos", df_b_sob)
+    gc.collect()
 
-            # ... Y repetís para el resto: DOLAR_LINKED, BOPREALES, etc.
-
-            print("⌛ Esperando 5 minutos antes de la próxima consulta...")
-            time.sleep(300)
-
-        except Exception as e:
-            print(f"❌ Error en la consulta: {e}")
-            time.sleep(60)  # reintentar en 1 min
-
-        gc.collect()
+def dentro_de_horario():
+    """Ejemplo: solo funciona entre 10 y 19 (hora Argentina)."""
+    ahora = datetime.now(pytz.timezone("America/Argentina/Buenos_Aires"))
+    return 10 <= ahora.hour < 19
 
 if __name__ == "__main__":
-    main_loop()
+    print("🚀 Iniciando script con suscripción fugaz cada 5 minutos.")
+    while True:
+        if dentro_de_horario():
+            try:
+                ciclo_breve_suscripcion()
+            except Exception as e:
+                print(f"❌ Error en el ciclo: {e}")
+                time.sleep(60)  # reintentar en 1 min
+        else:
+            print("🌙 Fuera de horario (10 a 19). Esperamos 60s.")
+            time.sleep(60)
+
+        # Esperar 5 minutos hasta el próximo “GET”
+        print("⌛ Esperando 5 minutos para la próxima suscripción.")
+        time.sleep(300)
+
