@@ -95,7 +95,7 @@ def ciclo_breve_suscripcion():
 def dentro_de_horario():
     """Ejemplo: solo funciona entre 10 y 19 (hora Argentina)."""
     ahora = datetime.now(pytz.timezone("America/Argentina/Buenos_Aires"))
-    return 10 <= ahora.hour < 19
+    return 10 <= ahora.hour < 20
 
 if __name__ == "__main__":
     print("🚀 Iniciando script con suscripción fugaz cada 5 minutos.")
