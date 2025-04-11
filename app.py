@@ -81,14 +81,21 @@ def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
 def guardar_en_supabase(tabla: str, df: pd.DataFrame):
     """
     Upsert en Supabase con on_conflict=symbol.
-    Ajustá tu tabla en Supabase para que 'symbol' sea PK o unique.
+    Evita error 'Object of type Timestamp is not JSON serializable'
+    convirtiendo cualquier pd.Timestamp en string .isoformat().
     """
     if df.empty:
         print("⚠️ DF vacío, nada que guardar en Supabase.")
         return
 
+    # Convertir a lista de dict
     rows = df.to_dict(orient="records")
+
     for row in rows:
+        # Convertir cualquier pd.Timestamp en string
+        for k, v in row.items():
+            if isinstance(v, pd.Timestamp):
+                row[k] = v.isoformat()
         row["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     supabase_headers = {
@@ -98,6 +105,7 @@ def guardar_en_supabase(tabla: str, df: pd.DataFrame):
         "Prefer": "resolution=merge-duplicates"
     }
     url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
+
     resp = requests.post(url, headers=supabase_headers, json=rows)
     if resp.status_code not in (200, 201):
         print(f"❌ Error Supabase ({tabla}): {resp.status_code} {resp.text}")
@@ -112,7 +120,6 @@ def main_loop():
             print(f"   Obtenidas {len(df_all)} filas totales (sumadas todas).")
 
             if not df_all.empty:
-                # Llamamos a la función de guardado en Supabase
                 guardar_en_supabase('pyhomebroker_intraday', df_all)
 
             print("⌛ Esperando 5 min antes de la próxima consulta...\n")
