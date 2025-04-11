@@ -80,19 +80,15 @@ def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
 
 def guardar_en_supabase(tabla: str, df: pd.DataFrame):
     """
-    Upsert en Supabase con on_conflict=symbol.
-    Evita error 'Object of type Timestamp is not JSON serializable'
-    convirtiendo cualquier pd.Timestamp en string .isoformat().
+    Solo INSERT (no upsert). No ?on_conflict en la URL. 
+    Convertimos pd.Timestamp a string para evitar error 'not JSON serializable'.
     """
     if df.empty:
         print("⚠️ DF vacío, nada que guardar en Supabase.")
         return
 
-    # Convertir a lista de dict
     rows = df.to_dict(orient="records")
-
     for row in rows:
-        # Convertir cualquier pd.Timestamp en string
         for k, v in row.items():
             if isinstance(v, pd.Timestamp):
                 row[k] = v.isoformat()
@@ -101,33 +97,35 @@ def guardar_en_supabase(tabla: str, df: pd.DataFrame):
     supabase_headers = {
         "apikey": SUPABASE_API_KEY,
         "Authorization": f"Bearer {SUPABASE_API_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "Content-Type": "application/json"
+        # Sin "Prefer": "resolution=merge-duplicates" ni on_conflict
     }
-    url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
+    # <--- URL sin on_conflict
+    url = f"{SUPABASE_URL}/rest/v1/{tabla}"
 
     resp = requests.post(url, headers=supabase_headers, json=rows)
     if resp.status_code not in (200, 201):
         print(f"❌ Error Supabase ({tabla}): {resp.status_code} {resp.text}")
     else:
-        print(f"✅ Insertadas/Upserteadas {len(rows)} filas en '{tabla}'.")
+        print(f"✅ Insertadas {len(rows)} filas en '{tabla}' (sin upsert).")
 
 def main_loop():
     while True:
         try:
-            print(f"🔄 Obteniendo última fila intradiaria para {len(TICKERS)} tickers.")
+            print(f\"🔄 Obteniendo última fila intradiaria para {len(TICKERS)} tickers.\")
             df_all = get_intraday_history_for_tickers(TICKERS)
-            print(f"   Obtenidas {len(df_all)} filas totales (sumadas todas).")
-
+            print(f\"   Obtenidas {len(df_all)} filas totales.\")
+            
             if not df_all.empty:
+                # Solo Insert: no upsert
                 guardar_en_supabase('pyhomebroker_intraday', df_all)
-
-            print("⌛ Esperando 5 min antes de la próxima consulta...\n")
+            
+            print(\"⌛ Esperando 5 min antes de la próxima consulta...\\n\")
             time.sleep(300)
         except Exception as e:
-            print(f"❌ Error en el ciclo principal: {e}")
+            print(f\"❌ Error en el ciclo principal: {e}\")
             time.sleep(60)
         gc.collect()
 
-if __name__ == "__main__":
+if __name__ == \"__main__\":
     main_loop()
