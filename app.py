@@ -57,7 +57,7 @@ def get_intraday_history(ticker: str) -> pd.DataFrame:
     df_t = hb.history.get_intraday_history(ticker)
     if df_t.empty:
         return df_t
-    return df_t[-1:]
+    return df_t[-1:]  # Solo la última fila
 
 def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
     frames = []
@@ -78,30 +78,31 @@ def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
     else:
         return pd.DataFrame()
 
-# def guardar_en_supabase(tabla: str, df: pd.DataFrame):
-#     """
-#     Upsert en Supabase con on_conflict=symbol.
-#     """
-#     if df.empty:
-#         print("⚠️ DF vacío, nada que guardar en Supabase.")
-#         return
+def guardar_en_supabase(tabla: str, df: pd.DataFrame):
+    """
+    Upsert en Supabase con on_conflict=symbol.
+    Ajustá tu tabla en Supabase para que 'symbol' sea PK o unique.
+    """
+    if df.empty:
+        print("⚠️ DF vacío, nada que guardar en Supabase.")
+        return
 
-#     rows = df.to_dict(orient="records")
-#     for row in rows:
-#         row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    rows = df.to_dict(orient="records")
+    for row in rows:
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-#     supabase_headers = {
-#         "apikey": SUPABASE_API_KEY,
-#         "Authorization": f"Bearer {SUPABASE_API_KEY}",
-#         "Content-Type": "application/json",
-#         "Prefer": "resolution=merge-duplicates"
-#     }
-#     url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
-#     resp = requests.post(url, headers=supabase_headers, json=rows)
-#     if resp.status_code not in (200, 201):
-#         print(f"❌ Error Supabase ({tabla}): {resp.status_code} {resp.text}")
-#     else:
-#         print(f"✅ Insertadas/Upserteadas {len(rows)} filas en '{tabla}'.")
+    supabase_headers = {
+        "apikey": SUPABASE_API_KEY,
+        "Authorization": f"Bearer {SUPABASE_API_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates"
+    }
+    url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
+    resp = requests.post(url, headers=supabase_headers, json=rows)
+    if resp.status_code not in (200, 201):
+        print(f"❌ Error Supabase ({tabla}): {resp.status_code} {resp.text}")
+    else:
+        print(f"✅ Insertadas/Upserteadas {len(rows)} filas en '{tabla}'.")
 
 def main_loop():
     while True:
@@ -110,16 +111,16 @@ def main_loop():
             df_all = get_intraday_history_for_tickers(TICKERS)
             print(f"   Obtenidas {len(df_all)} filas totales (sumadas todas).")
 
-            # Comentar la parte de supabase
-            # guardar_en_supabase('pyhomebroker_intraday', df_all)
+            if not df_all.empty:
+                # Llamamos a la función de guardado en Supabase
+                guardar_en_supabase('pyhomebroker_intraday', df_all)
 
             print("⌛ Esperando 5 min antes de la próxima consulta...\n")
             time.sleep(300)
         except Exception as e:
-            print(f"❌ Error en ciclo principal: {e}")
+            print(f"❌ Error en el ciclo principal: {e}")
             time.sleep(60)
         gc.collect()
 
 if __name__ == "__main__":
     main_loop()
-
