@@ -5,32 +5,31 @@ import gc
 import pandas as pd
 from datetime import datetime, timezone
 from pyhomebroker import HomeBroker
-from dotenv import load_dotenv
 
-load_dotenv()  # Carga variables del .env
+# from dotenv import load_dotenv
+# load_dotenv()
 
-# Credenciales PyHomeBroker
-BROKER_ID = int(os.getenv("BROKER_ID"))
+BROKER_ID = os.getenv("BROKER_ID")
 DNI = os.getenv("DNI")
 USER = os.getenv("USER")
 PASSWORD = os.getenv("PASSWORD")
 
-# Credenciales Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 
-# Verificaciones mínimas
-if not SUPABASE_URL or not SUPABASE_API_KEY:
-    raise ValueError("❌ Faltan credenciales de Supabase.")
 if not BROKER_ID or not DNI or not USER or not PASSWORD:
-    raise ValueError("❌ Faltan credenciales de PyHomeBroker.")
+    raise ValueError("❌ Faltan credenciales PyHomeBroker (BROKER_ID, DNI, USER, PASSWORD).")
+if not SUPABASE_URL or not SUPABASE_API_KEY:
+    raise ValueError("❌ Faltan credenciales Supabase (SUPABASE_URL, SUPABASE_API_KEY).")
 
-# 1) Inicializar PyHomeBroker y loguearse
+BROKER_ID = int(BROKER_ID)
+
+# Inicializar PyHomeBroker
 hb = HomeBroker(BROKER_ID)
 hb.auth.login(dni=DNI, user=USER, password=PASSWORD, raise_exception=True)
-print("✅ Conectado a PyHomeBroker - se usará hb.history.get_intraday_history(ticker).")
+print("✅ Conectado a PyHomeBroker (usando hb.history).")
 
-# 2) Lista única de Tickers unificados
+# Lista de tickers (tasa_fija, bonos_soberanos, etc.)
 TICKERS = [
     # TASA_FIJA
     "S31M5", "S16A5", "BBA2S", "S28A5", "S16Y5", "BBY5", "S30Y5", "S18J5", "BJ25",
@@ -55,26 +54,29 @@ TICKERS = [
 
 def get_intraday_history(ticker: str) -> pd.DataFrame:
     """
-    Llama a hb.history.get_intraday_history(ticker)
-    Retorna DataFrame con columnas típicas (open, high, low, etc.)
+    Retorna sólo la última fila df_t[-1:] de hb.history.get_intraday_history(ticker).
     """
-    df = hb.history.get_intraday_history(ticker)
-    return df
+    df_t = hb.history.get_intraday_history(ticker)
+    if df_t.empty:
+        return df_t  # df vacío
+    # Retornar solo la última fila
+    return df_t[-1:]
 
 def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
-    """
-    Itera cada ticker, obtiene DF, concatena todo en un DF general,
-    agregando columna 'symbol' para saber a qué ticker corresponde cada fila.
-    """
     frames = []
     for t in tickers:
         try:
             df_t = get_intraday_history(t)
             if not df_t.empty:
                 df_t["symbol"] = t
+                # Debug: print para ver data
+                print(f"🔎 Data intradiaria última fila para {t}:")
+                print(df_t)
                 frames.append(df_t)
+            else:
+                print(f"⚠️ Ticker {t}: DataFrame vacío.")
         except Exception as e:
-            print(f"❌ Error al obtener histórico {t}: {e}")
+            print(f"❌ Error al obtener histórico de {t}: {e}")
     if frames:
         return pd.concat(frames, ignore_index=True)
     else:
@@ -82,17 +84,15 @@ def get_intraday_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
 
 def guardar_en_supabase(tabla: str, df: pd.DataFrame):
     """
-    Inserta/Upserta cada fila del DF en la tabla 'tabla' en Supabase,
-    usando on_conflict=symbol (asume 'symbol' es PK o UNIQUE).
+    Upsert en Supabase con on_conflict=symbol.
     """
     if df.empty:
-        print("⚠️ DF vacío, nada que guardar.")
+        print("⚠️ DF vacío, nada que guardar en Supabase.")
         return
 
     rows = df.to_dict(orient="records")
-    # Insertar 'updated_at'
-    for record in rows:
-        record["updated_at"] = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     supabase_headers = {
         "apikey": SUPABASE_API_KEY,
@@ -100,38 +100,37 @@ def guardar_en_supabase(tabla: str, df: pd.DataFrame):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates"
     }
-    supabase_url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
-
-    resp = requests.post(supabase_url, headers=supabase_headers, json=rows)
+    url = f"{SUPABASE_URL}/rest/v1/{tabla}?on_conflict=symbol"
+    resp = requests.post(url, headers=supabase_headers, json=rows)
     if resp.status_code not in (200, 201):
-        print(f"❌ Error insert en Supabase: {resp.status_code} {resp.text}")
+        print(f"❌ Error Supabase ({tabla}): {resp.status_code} {resp.text}")
     else:
         print(f"✅ Insertadas/Upserteadas {len(rows)} filas en '{tabla}'.")
 
 def main_loop():
     """
     Cada 5 minutos:
-    - Llama get_intraday_history_for_tickers(...) de la lista TICKERS
-    - Guarda en supabase en tabla 'pyhomebroker_intraday'
+    - Toma df con la última fila intradia de cada ticker
+    - Guarda en tabla 'pyhomebroker_intraday'
     """
-    TABLA_DESTINO = "pyhomebroker_intraday"
-
+    tabla_destino = "pyhomebroker_intraday"
     while True:
         try:
-            print(f"🔄 Obteniendo histórico intradiario de {len(TICKERS)} tickers...")
+            print(f"🔄 Obteniendo última fila intradiaria para {len(TICKERS)} tickers.")
             df_all = get_intraday_history_for_tickers(TICKERS)
             print(f"   Obtenidas {len(df_all)} filas totales.")
 
             if not df_all.empty:
-                guardar_en_supabase(TABLA_DESTINO, df_all)
+                guardar_en_supabase(tabla_destino, df_all)
 
-            print("⌛ Esperando 5 minutos para la próxima consulta...\n")
+            print("⌛ Esperando 5 min antes de la próxima consulta...\n")
             time.sleep(300)
         except Exception as e:
-            print(f"❌ Error en ciclo principal: {e}")
+            print(f"❌ Error en el ciclo principal: {e}")
             time.sleep(60)
         gc.collect()
 
 if __name__ == "__main__":
     main_loop()
+
 
