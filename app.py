@@ -132,6 +132,6 @@ def main_loop():
             time.sleep(60)
         gc.collect()
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main_loop()
 
