@@ -2,4 +2,3 @@ requests
 pandas
 pyhomebroker
 python-dotenv
-certifi>=2024.2
